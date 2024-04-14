@@ -13,7 +13,7 @@ import rclpy.duration
 import rosbag2_py
 from rclpy.serialization import serialize_message
 # ROS msg
-from std_msgs.msg import String
+# from std_msgs.msg import String
 from sensor_msgs.msg import CameraInfo, CompressedImage, Imu, NavSatFix, PointCloud2, PointField
 from geometry_msgs.msg import Point, PoseStamped, Transform, TransformStamped
 from tf2_msgs.msg import TFMessage
@@ -64,7 +64,7 @@ class Nuscenes_Node(Node):
                             str(self.nuscenes_version),))
         
     def unix_us2time(self, data):
-        # seconds, microsecond 1000_000_000
+        # seconds, microsecond
         secs, msecs = divmod(data, 1_000_000)
         nsecs = msecs * 1000
         t = rclpy.time.Time(seconds=secs, nanoseconds=nsecs)
@@ -235,6 +235,14 @@ class Nuscenes_Node(Node):
 
         return tf_array
 
+    def get_radar(self, sample_data, frame_id):
+        pc_filename = 'data/' + sample_data['filename']
+        pc = pypcd.PointCloud.from_path(pc_filename)
+        msg = numpy_pc2.array_to_pointcloud2(pc.pc_data)
+        msg.header.frame_id = frame_id
+        msg.header.stamp = self.unix_us2time(sample_data['timestamp']).to_msg()
+        return msg
+
     def get_lidar(self, sample_data, frame_id):
         pc_filename = 'data/' + sample_data['filename']
         pc_filesize = os.stat(pc_filename).st_size
@@ -332,28 +340,35 @@ class Nuscenes_Node(Node):
         )
         return math.degrees(target_lat), math.degrees(target_lon)
 
-    def derive_latlon(self, location: str, pose: Dict[str, float]):
-        """
-        For each pose value, extract its respective lat/lon coordinate and timestamp.
-        
-        This makes the following two assumptions in order to work:
-            1. The reference coordinate for each map is in the south-western corner.
-            2. The origin of the global poses is also in the south-western corner (and identical to 1).
-        :param location: The name of the map the poses correspond to, ie: 'boston-seaport'.
-        :param poses: All nuScenes egopose dictionaries of a scene.
-        :return: A list of dicts (lat/lon coordinates and timestamps) for each pose.
-        """
-        assert location in self.REFERENCE_COORDINATES.keys(), \
-            f'Error: The given location: {location}, has no available reference.'
+    # write ##############################################
+    def write_occupancy_grid(self, nusc_map, ego_pose, stamp):
+        translation = ego_pose['translation']
+        rotation = Quaternion(ego_pose['rotation'])
+        yaw = quaternion_yaw(rotation) / np.pi * 180
+        patch_box = (translation[0], translation[1], 32, 32)
+        canvas_size = (patch_box[2] * 10, patch_box[3] * 10)
 
-        coordinates = []
-        reference_lat, reference_lon = self.REFERENCE_COORDINATES[location]
-        ts = pose['timestamp']
-        x, y = pose['translation'][:2]
-        bearing = math.atan(x / y)
-        distance = math.sqrt(x**2 + y**2)
-        lat, lon = self.get_coordinate(reference_lat, reference_lon, bearing, distance)
-        return {'latitude': lat, 'longitude': lon}
+        drivable_area = nusc_map.get_map_mask(patch_box, yaw, ['drivable_area'], canvas_size)[0]
+        drivable_area = (drivable_area * 100).astype(np.int8)
+
+        msg = OccupancyGrid()
+        msg.header.frame_id = 'base_link'
+        msg.header.stamp = stamp.to_msg()
+        msg.info.map_load_time = stamp.to_msg()
+        msg.info.resolution = 0.1
+        msg.info.width = drivable_area.shape[1]
+        msg.info.height = drivable_area.shape[0]
+        msg.info.origin.position.x = -16.0
+        msg.info.origin.position.y = -16.0
+        msg.info.origin.orientation.w = 1.0
+        msg.data = drivable_area.flatten().tolist()
+
+        # bag.write('/drivable_area', msg, stamp)
+        self.writer.write(
+            '/drivable_area',
+            serialize_message(msg),
+            stamp.nanoseconds
+        )
 
     def convert_scene(self, scene_i):
         # certain scene
@@ -410,7 +425,7 @@ class Nuscenes_Node(Node):
         # /drivable_area
         topic_info = rosbag2_py._storage.TopicMetadata(
                 name='/drivable_area',
-                type='tf2_msgs/msg/TFMessage',
+                type='nav_msgs/msg/OccupancyGrid',
                 serialization_format='cdr')
         self.writer.create_topic(topic_info)
         # TODO: sensors
@@ -489,7 +504,7 @@ class Nuscenes_Node(Node):
             )
 
             # /driveable_area occupancy grid
-            # self.write_occupancy_grid(bag, nusc_map, ego_pose, stamp)
+            self.write_occupancy_grid(nusc_map, ego_pose, stamp)
             
             # TODO: iterate sensors
             for (sensor_id, sample_data_token) in cur_sample['data'].items():
@@ -553,8 +568,57 @@ class Nuscenes_Node(Node):
             )
 
             # collect all sensor frames after this sample but before the next sample
+            non_keyframe_sensor_msgs = []
+            for (sensor_id, sample_token) in cur_sample['data'].items():
+                topic = '/' + sensor_id
+
+                next_sample_token = self.nusc.get('sample_data', sample_token)['next']
+                while next_sample_token != '':
+                    next_sample_data = self.nusc.get('sample_data', next_sample_token)
+                    # if next_sample_data['is_key_frame'] or get_time(next_sample_data).to_nsec() > next_stamp.to_nsec():
+                    #     break
+                    if next_sample_data['is_key_frame']:
+                        break
+
+                    if next_sample_data['sensor_modality'] == 'radar':
+                        msg = self.get_radar(next_sample_data, sensor_id)
+                        # non_keyframe_sensor_msgs.append((msg.header.stamp.to_nsec(), topic, msg))
+                    elif next_sample_data['sensor_modality'] == 'lidar':
+                        msg = self.get_lidar(next_sample_data, sensor_id)
+                        non_keyframe_sensor_msgs.append((msg.header.stamp.sec*1_000_000_000+msg.header.stamp.nanosec, topic, msg))
+                    elif next_sample_data['sensor_modality'] == 'camera':
+                        msg = self.get_camera(next_sample_data, sensor_id)
+                        camera_stamp_nsec = msg.header.stamp.sec*1_000_000_000+msg.header.stamp.nanosec
+                        non_keyframe_sensor_msgs.append((camera_stamp_nsec, topic + '/image_rect_compressed', msg))
+
+                        msg = self.get_camera_info(next_sample_data, sensor_id)
+                        non_keyframe_sensor_msgs.append((camera_stamp_nsec, topic + '/camera_info', msg))
+
+            #             closest_lidar = self.find_closest_lidar(cur_sample['data']['LIDAR_TOP'], camera_stamp_nsec)
+                        # if closest_lidar is not None:
+                        #     msg = self.get_lidar_imagemarkers(closest_lidar, next_sample_data, sensor_id)
+                        #     non_keyframe_sensor_msgs.append((msg.header.stamp.to_nsec(), topic + '/image_markers_lidar', msg))
+                        # else:
+                        #     msg = self.get_remove_imagemarkers(sensor_id, 'LIDAR_TOP', msg.header.stamp)
+                        #     non_keyframe_sensor_msgs.append((msg.header.stamp.to_nsec(), topic + '/image_markers_lidar', msg))
+
+                        # Delete all image markers on non-keyframe camera images
+                        # msg = get_remove_imagemarkers(sensor_id, 'LIDAR_TOP', msg.header.stamp)
+                        # non_keyframe_sensor_msgs.append((camera_stamp_nsec, topic + '/image_markers_lidar', msg))
+                        # msg = get_remove_imagemarkers(sensor_id, 'annotations', msg.header.stamp)
+                        # non_keyframe_sensor_msgs.append((camera_stamp_nsec, topic + '/image_markers_annotations', msg))
+
+                    next_sample_token = next_sample_data['next']
 
             # sort and publish the non-keyframe sensor msgs
+            non_keyframe_sensor_msgs.sort(key=lambda x: x[0])
+            for (_, topic, msg) in non_keyframe_sensor_msgs:
+                # bag.write(topic, msg, msg.header.stamp)
+                self.writer.write(
+                    topic,
+                    serialize_message(msg),
+                    msg.header.stamp.sec*1_000_000_000+msg.header.stamp.nanosec
+                )
 
             # move to the next sample
             cur_sample = self.nusc.get('sample', cur_sample['next']) if cur_sample.get('next') != '' else None
