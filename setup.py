@@ -20,7 +20,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            "player = nuscenes_player.node:main"
+            # "player = nuscenes_player.node:main"
+            "convertor = nuscenes_player.convert2bag:main"
         ],
     },
 )

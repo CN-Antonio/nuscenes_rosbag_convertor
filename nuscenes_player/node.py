@@ -32,14 +32,27 @@ class Nuscenes_Node(Node):
         self.nusc = NuScenes(version=self.nuscenes_version, 
                              dataroot=self.nuscenes_dir, 
                              verbose=True)
-        print(len(self.nusc.scene))
+        self.nusc.list_scenes()
         
         # Initialize for control status
         self.set_index(1)
         self.pause = False
         self.stop = True
         self.publishing = True
-        self.timer = self.create_timer(1.0 / self.update_frequency, self.publish_callback)
+        # self.timer = self.create_timer(1.0 / self.update_frequency, self.publish_callback)
+
+        # Threads control
+        signal.signal(signal.SIGINT, self.handler)
+        threads = [threading.Thread(target = self.thread_sample),
+                   threading.Thread(target = self.thread_camera),]
+
+        for t in threads:
+            t.start()
+
+    # thread func
+    def handler(signum, frame):
+        global is_exit
+        is_exit = True
 
     def read_params(self):
         self.nuscenes_dir = self.get_parameter_or(
@@ -107,6 +120,7 @@ class Nuscenes_Node(Node):
             #                        self.publishers[info_pub_name],
             #                        cam_intrinsic,
             #                        channel)
+
     def _lidar_publish(self, lidar_data, is_publish_lidar=False):
         """Publish lidar related data, first publish pose/tf information and ego pose, then publish lidar if needed
 
@@ -120,6 +134,57 @@ class Nuscenes_Node(Node):
         lidar_path = os.path.join(self.nuscenes_dir, lidar_data['filename'])
         channel = 'LIDAR_TOP'
 
+    def thread_camera(self, channel):
+        # Publish camera and camera info
+        while True:
+            self.get_logger().info("thread_camera loop")
+            next_sensor_token = cur_sensor['next']
+            sample_time = time.time()
+
+            self._camera_publish(cur_sensor, is_publish_image=self.publishing)
+
+            if(next_sensor_token == ''):
+                # If end reached, wait
+                next_sensor_token = self.current_sample['data'][channel]
+                next_sensor = self.nusc.get('sample_data', next_sensor_token)
+                period = 1000 # 1ms
+            else:
+                next_sensor = self.nusc.get('sample_data', next_sensor_token)
+                period = int(next_sensor['timestamp']) - int(cur_sensor['timestamp'])
+                # cur_sensor = next_sensor
+
+            cur_sensor = next_sensor
+
+            sensor_token = self.current_sample['data'][channel]
+            data = self.nusc.get('sample_data', sensor_token)
+            self._camera_publish(data, is_publish_image=self.publishing)
+            # if()
+
+            time.sleep(0.05)
+
+    def thread_sample(self):
+        while True:
+            self.get_logger().info("thread_sample loop")
+            next_sample_token = self.current_sample['next']
+            self.sample_time = time.time()
+
+            if (next_sample_token == ''):
+                # If end reached, loop back from the start
+                self.current_sample = self.nusc.get('sample', self.current_scene['first_sample_token'])
+                # self.current_cam_front = self.nusc.get('sample', self.current_sample['data']['CAM_FRONT'])
+                # self.first_CAM = True
+                self.first_lidar_flag = True
+                # self.current_cam = 
+            else:
+                next_sample = self.nusc.get('sample', next_sample_token)
+                period = int(next_sample['timestamp']) - int(self.current_sample['timestamp'])
+                self.current_sample = next_sample
+
+            time.sleep(period/1_000_000)
+            self.get_logger().info("target period: %d us" % period)
+            self.get_logger().info("actual period: %d us" % int((time.time()-self.sample_time)*1_000_000))
+            print()
+
     def publish_callback(self, event=None):
         self.get_logger().info("node loop")
 
@@ -128,6 +193,10 @@ class Nuscenes_Node(Node):
         for channel in channels:
             data = self.nusc.get('sample_data', self.current_sample['data'][channel])
             self._camera_publish(data, is_publish_image=self.publishing)
+
+        # Publish lidar and ego pose
+        data = self.nusc.get('sample_data', self.current_sample['data']['LIDAR_TOP'])
+        self._lidar_publish(data, self.publishing)
 
         if True:
             if (self.current_sample['next'] == ''):
