@@ -2,6 +2,7 @@ import os
 import math
 from typing import Tuple, Dict
 import numpy as np
+import cv2
 # from pypcd import numpy_pc2, pypcd
 from pyquaternion import Quaternion
 # ROS
@@ -12,7 +13,7 @@ import rosbag2_py
 from rclpy.serialization import serialize_message
 # ROS msg
 from std_msgs.msg import ColorRGBA
-from sensor_msgs.msg import CameraInfo, CompressedImage, Imu, NavSatFix, PointCloud2, PointField
+from sensor_msgs.msg import CameraInfo, Image, CompressedImage, Imu, NavSatFix, PointCloud2, PointField
 from geometry_msgs.msg import Point, Pose, PoseStamped, Transform, TransformStamped
 from tf2_msgs.msg import TFMessage
 from nav_msgs.msg import OccupancyGrid
@@ -29,8 +30,8 @@ from nuscenes.eval.common.utils import quaternion_yaw
 class Nuscenes_Node(Node):
     def __init__(self, name="nuscenes_node"):
         super().__init__(name,
-                         allow_undeclared_parameters=True,
-                         automatically_declare_parameters_from_overrides=True)
+                         allow_undeclared_parameters=False)
+                        #  automatically_declare_parameters_from_overrides=True)
         
         self.get_logger().info("Starting Nuscenes Visualization Node.")
 
@@ -50,10 +51,18 @@ class Nuscenes_Node(Node):
         self.nusc.list_scenes()
 
     def read_params(self):
-        self.nuscenes_dir = self.get_parameter_or(
-            '~NUSCENES_DIR', rclpy.Parameter('~NUSCENES_DIR', rclpy.Parameter.Type.STRING, '/home/antonio/Data/nuscenes/Full_dataset_v1.0/mini/')).value
-        self.nuscenes_version = self.get_parameter_or(
-            '~NUSCENES_VER', rclpy.Parameter('~NUSCENES_VER', rclpy.Parameter.Type.STRING, 'v1.0-mini')).value
+        self.declare_parameter('~NUSCENES_DIR', '/home/antonio/Data/nuscenes/Full_dataset_v1.0/mini/')
+        self.declare_parameter('~NUSCENES_VER', 'v1.0-mini')
+        self.declare_parameter('dataset_index', 0)
+        self.declare_parameter('convert_RGBImage', 0)
+
+        self.nuscenes_dir = self.get_parameter("~NUSCENES_DIR").value
+        self.nuscenes_version = self.get_parameter("~NUSCENES_VER").value
+
+        # self.nuscenes_dir = self.get_parameter_or(
+        #     '~NUSCENES_DIR', rclpy.Parameter('~NUSCENES_DIR', rclpy.Parameter.Type.STRING, '/home/antonio/Data/nuscenes/Full_dataset_v1.0/mini/')).value
+        # self.nuscenes_version = self.get_parameter_or(
+        #     '~NUSCENES_VER', rclpy.Parameter('~NUSCENES_VER', rclpy.Parameter.Type.STRING, 'v1.0-mini')).value
         
         self.get_logger().info("dir: %s, ver: %s" %
                            (str(self.nuscenes_dir),
@@ -333,7 +342,7 @@ class Nuscenes_Node(Node):
             msg.data = pc_file.read()
             return msg
 
-    def get_camera(self, sample_data, frame_id):
+    def get_camera_compressed(self, sample_data, frame_id):
         jpg_filename = 'data/' + sample_data['filename']
         msg = CompressedImage()
         msg.header.frame_id = frame_id
@@ -341,6 +350,21 @@ class Nuscenes_Node(Node):
         msg.format = "jpeg"
         with open(jpg_filename, 'rb') as jpg_file:
             msg.data = jpg_file.read()
+        return msg
+
+    # RGB Image
+    def get_camera(self, sample_data, frame_id):
+        jpg_filename = 'data/' + sample_data['filename']
+        img = cv2.imread(jpg_filename)
+
+        msg = Image()
+        msg.header.frame_id = frame_id
+        msg.header.stamp = self.unix_us2time(sample_data['timestamp']).to_msg()
+        msg.height, msg.width = img.shape[:2]
+        msg.step = msg.width*3
+        msg.encoding = "bgr8"
+        msg.data = np.array(img).tostring()
+        
         return msg
 
     def get_camera_info(self, sample_data, frame_id):
@@ -538,6 +562,12 @@ class Nuscenes_Node(Node):
                 type='sensor_msgs/msg/CompressedImage',
                 serialization_format='cdr')
             self.writer.create_topic(topic_info)
+            # Image
+            topic_info = rosbag2_py._storage.TopicMetadata(
+                name='/' + channel + '/image',
+                type='sensor_msgs/msg/Image',
+                serialization_format='cdr')
+            self.writer.create_topic(topic_info)
             # /CameraInfo
             topic_info = rosbag2_py._storage.TopicMetadata(
                 name='/' + channel + '/camera_info',
@@ -633,10 +663,16 @@ class Nuscenes_Node(Node):
                     )
                 elif sample_data['sensor_modality'] == 'camera':
                     # self.write_camera(sample_data_token) # key_frame & none_key_frame
-                    msg = self.get_camera(sample_data, sensor_id)
+                    msg = self.get_camera_compressed(sample_data, sensor_id)
                     # bag.write(topic + '/image_rect_compressed', msg, stamp)
                     self.writer.write(
                         topic + '/image_rect_compressed',
+                        serialize_message(msg),
+                        stamp.nanoseconds
+                    )
+                    msg = self.get_camera(sample_data, sensor_id)
+                    self.writer.write(
+                        topic + '/image',
                         serialize_message(msg),
                         stamp.nanoseconds
                     )
@@ -724,9 +760,14 @@ class Nuscenes_Node(Node):
                         msg = self.get_lidar(next_sample_data, sensor_id)
                         non_keyframe_sensor_msgs.append((msg.header.stamp.sec*1_000_000_000+msg.header.stamp.nanosec, topic, msg))
                     elif next_sample_data['sensor_modality'] == 'camera':
-                        msg = self.get_camera(next_sample_data, sensor_id)
+                        # CompressedImage
+                        msg = self.get_camera_compressed(next_sample_data, sensor_id)
                         camera_stamp_nsec = msg.header.stamp.sec*1_000_000_000+msg.header.stamp.nanosec
                         non_keyframe_sensor_msgs.append((camera_stamp_nsec, topic + '/image_rect_compressed', msg))
+                        # Image
+                        msg = self.get_camera(next_sample_data, sensor_id)
+                        camera_stamp_nsec = msg.header.stamp.sec*1_000_000_000+msg.header.stamp.nanosec
+                        non_keyframe_sensor_msgs.append((camera_stamp_nsec, topic + '/image', msg))
 
                         msg = self.get_camera_info(next_sample_data, sensor_id)
                         non_keyframe_sensor_msgs.append((camera_stamp_nsec, topic + '/camera_info', msg))
