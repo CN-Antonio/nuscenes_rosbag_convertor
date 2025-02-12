@@ -16,7 +16,7 @@ from std_msgs.msg import ColorRGBA
 from sensor_msgs.msg import CameraInfo, Image, CompressedImage, Imu, NavSatFix, PointCloud2, PointField
 from geometry_msgs.msg import Point, Pose, PoseStamped, Transform, TransformStamped
 from tf2_msgs.msg import TFMessage
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Odometry
 from visualization_msgs.msg import ImageMarker, Marker, MarkerArray
 
 from nuscenes_player.bitmap import BitMap
@@ -35,7 +35,7 @@ class Nuscenes_Node(Node):
         
         self.get_logger().info("Starting Nuscenes Visualization Node.")
 
-        self.read_params()
+        self.InitParams()
 
         # NuScenes Init
         self.EARTH_RADIUS_METERS = 6.378137e6
@@ -48,22 +48,14 @@ class Nuscenes_Node(Node):
         self.nusc = NuScenes(version=self.nuscenes_version, 
                              dataroot=self.nuscenes_dir, 
                              verbose=True)
-        self.nusc_can = NuScenesCanBus(dataroot='data')
         self.nusc.list_scenes()
+        self.nusc_can = NuScenesCanBus(dataroot=self.nuscenes_dir)
 
-    def read_params(self):
-        self.declare_parameter('~NUSCENES_DIR', '/home/antonio/Data/nuscenes/Full_dataset_v1.0/mini/')
-        self.declare_parameter('~NUSCENES_VER', 'v1.0-mini')
-        self.declare_parameter('dataset_index', 0)
-        self.declare_parameter('convert_RGBImage', 0)
-
-        self.nuscenes_dir = self.get_parameter("~NUSCENES_DIR").value
-        self.nuscenes_version = self.get_parameter("~NUSCENES_VER").value
-
-        # self.nuscenes_dir = self.get_parameter_or(
-        #     '~NUSCENES_DIR', rclpy.Parameter('~NUSCENES_DIR', rclpy.Parameter.Type.STRING, '/home/antonio/Data/nuscenes/Full_dataset_v1.0/mini/')).value
-        # self.nuscenes_version = self.get_parameter_or(
-        #     '~NUSCENES_VER', rclpy.Parameter('~NUSCENES_VER', rclpy.Parameter.Type.STRING, 'v1.0-mini')).value
+    def InitParams(self):
+        self.nuscenes_dir  = self.declare_parameter('nuscenes_dir', 'data').value
+        self.nuscenes_version = self.declare_parameter('nuscenes_version', 'v1.0-mini').value
+        self.scene_index = self.declare_parameter('scene_index', 0)
+        self.convert_RGBImage = self.declare_parameter('convert_RGBImage', False)
         
         self.get_logger().info("dir: %s, ver: %s" %
                            (str(self.nuscenes_dir),
@@ -488,6 +480,47 @@ class Nuscenes_Node(Node):
             stamp.nanoseconds
         )
 
+    def get_imu_msg(imu_data):
+    #     msg = Imu()
+    #     msg.header.frame_id = 'base_link'
+    #     msg.header.stamp = get_utime(imu_data)
+    #     msg.angular_velocity.x = imu_data['rotation_rate'][0];
+    #     msg.angular_velocity.y = imu_data['rotation_rate'][1];
+    #     msg.angular_velocity.z = imu_data['rotation_rate'][2];
+
+    #     msg.linear_acceleration.x = imu_data['linear_accel'][0];
+    #     msg.linear_acceleration.y = imu_data['linear_accel'][1];
+    #     msg.linear_acceleration.z = imu_data['linear_accel'][2];
+
+    #     msg.orientation.w = imu_data['q'][0];
+    #     msg.orientation.x = imu_data['q'][1];
+    #     msg.orientation.y = imu_data['q'][2];
+    #     msg.orientation.z = imu_data['q'][3];
+        
+    #     return (msg.header.stamp, '/imu', msg)
+        pass
+
+    def get_odom_msg(pose_data):
+        msg = Odometry()
+        msg.header.frame_id = 'map'
+        msg.header.stamp = get_utime(pose_data)
+        msg.child_frame_id = 'base_link'
+        msg.pose.pose.position.x = pose_data['pos'][0]
+        msg.pose.pose.position.y = pose_data['pos'][1]
+        msg.pose.pose.position.z = pose_data['pos'][2]
+        msg.pose.pose.orientation.w = pose_data['orientation'][0]
+        msg.pose.pose.orientation.x = pose_data['orientation'][1]
+        msg.pose.pose.orientation.y = pose_data['orientation'][2]
+        msg.pose.pose.orientation.z = pose_data['orientation'][3]
+        msg.twist.twist.linear.x = pose_data['vel'][0]
+        msg.twist.twist.linear.y = pose_data['vel'][1]
+        msg.twist.twist.linear.z = pose_data['vel'][2]
+        msg.twist.twist.angular.x = pose_data['rotation_rate'][0]
+        msg.twist.twist.angular.y = pose_data['rotation_rate'][1]
+        msg.twist.twist.angular.z = pose_data['rotation_rate'][2]
+        
+        return (msg.header.stamp, '/odom', msg)
+
     def convert_scene(self, scene_i):
         # certain scene
         scene = self.nusc.scene[scene_i]
@@ -495,7 +528,7 @@ class Nuscenes_Node(Node):
         log = self.nusc.get('log', scene['log_token'])
         location = log['location']
         print(f'Loading map "{location}"')
-        nusc_map = NuScenesMap(dataroot='data', map_name=location)
+        nusc_map = NuScenesMap(dataroot=self.nuscenes_dir, map_name=location)
         print(f'Loading bitmap "{nusc_map.map_name}"')
         bitmap = BitMap(nusc_map.dataroot, nusc_map.map_name, 'basemap')
         print(f'Loaded {bitmap.image.shape} bitmap')
@@ -512,7 +545,7 @@ class Nuscenes_Node(Node):
         # ]
 
         # rosbag metadata
-        bag_name = f'NuScenes-{self.nuscenes_version}-{scene_name}.bag'
+        bag_name = f'nuScenes-{self.nuscenes_version}-{scene_name}.bag'
         bag_path = os.path.join(os.path.abspath(os.curdir), bag_name)
         
         self.writer = rosbag2_py.SequentialWriter()
@@ -646,15 +679,21 @@ class Nuscenes_Node(Node):
 
             # TODO: write CAN messages to /pose, /odom, and /diagnostics
             can_msg_events = []
-            # for i in range(len(can_parsers)):
-            #     (can_msgs, index, msg_func) = can_parsers[i]
-            #     while index < len(can_msgs) and get_utime(can_msgs[index]) < stamp:
-            #         can_msg_events.append(msg_func(can_msgs[index]))
-            #         index += 1
-            #         can_parsers[i][1] = index
-            # can_msg_events.sort(key = lambda x: x[0])
-            # for (msg_stamp, topic, msg) in can_msg_events:
-            #     bag.write(topic, msg, stamp)
+            for i in range(len(can_parsers)):
+                (can_msgs, index, msg_func) = can_parsers[i]
+                while index < len(can_msgs) and get_utime(can_msgs[index]) < stamp:
+                    can_msg_events.append(msg_func(can_msgs[index]))
+                    index += 1
+                    can_parsers[i][1] = index
+            can_msg_events.sort(key = lambda x: x[0])
+            for (msg_stamp, topic, msg) in can_msg_events:
+                # bag.write(topic, msg, stamp)
+                # self.writer.write(
+                #     topic,
+                #     serialize_message(msg),
+                #     msg_stamp.nanoseconds
+                # )
+                pass
 
             # publish /tf
             tf_array = self.get_tfmessage(cur_sample)

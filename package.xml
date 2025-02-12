@@ -4,7 +4,7 @@
   <name>nuscenes_player</name>
   <version>0.0.0</version>
   <description>TODO: Package description</description>
-  <maintainer email="dongyixiao2001@163.com">antonio</maintainer>
+  <maintainer email="dongyixiao2001@163.com">Dong Yixiao</maintainer>
   <license>TODO: License declaration</license>
 
   <depend>rclpy</depend>
