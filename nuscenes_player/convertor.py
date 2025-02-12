@@ -24,7 +24,7 @@ from nuscenes_player.bitmap import BitMap
 # nuscenes
 from nuscenes.nuscenes import NuScenes
 from nuscenes.map_expansion.map_api import NuScenesMap
-# from nuscenes.can_bus.can_bus_api import NuScenesCanBus
+from nuscenes.can_bus.can_bus_api import NuScenesCanBus
 from nuscenes.eval.common.utils import quaternion_yaw
 
 class Nuscenes_Node(Node):
@@ -48,6 +48,7 @@ class Nuscenes_Node(Node):
         self.nusc = NuScenes(version=self.nuscenes_version, 
                              dataroot=self.nuscenes_dir, 
                              verbose=True)
+        self.nusc_can = NuScenesCanBus(dataroot='data')
         self.nusc.list_scenes()
 
     def read_params(self):
@@ -501,6 +502,15 @@ class Nuscenes_Node(Node):
 
         cur_sample = self.nusc.get('sample', scene['first_sample_token'])
 
+        # can_parsers = [
+        #     [nusc_can.get_messages(scene_name, 'ms_imu'), 0, get_imu_msg],
+        #     [nusc_can.get_messages(scene_name, 'pose'), 0, get_odom_msg],
+        #     [nusc_can.get_messages(scene_name, 'steeranglefeedback'), 0, lambda x: get_basic_can_msg('Steering Angle', x)],
+        #     [nusc_can.get_messages(scene_name, 'vehicle_monitor'), 0, lambda x: get_basic_can_msg('Vehicle Monitor', x)],
+        #     [nusc_can.get_messages(scene_name, 'zoesensors'), 0, lambda x: get_basic_can_msg('Zoe Sensors', x)],
+        #     [nusc_can.get_messages(scene_name, 'zoe_veh_info'), 0, lambda x: get_basic_can_msg('Zoe Vehicle Info', x)],
+        # ]
+
         # rosbag metadata
         bag_name = f'NuScenes-{self.nuscenes_version}-{scene_name}.bag'
         bag_path = os.path.join(os.path.abspath(os.curdir), bag_name)
@@ -527,12 +537,13 @@ class Nuscenes_Node(Node):
                 type='visualization_msgs/msg/MarkerArray',
                 serialization_format='cdr')
         self.writer.create_topic(topic_info)
-        # /pose,TODO: /odom, and /diagnostics
+        # /pose
         topic_info = rosbag2_py._storage.TopicMetadata(
                 name='/pose',
                 type='geometry_msgs/msg/PoseStamped',
                 serialization_format='cdr')
         self.writer.create_topic(topic_info)
+        # TODO: /odom, and /diagnostics
         # /tf
         topic_info = rosbag2_py._storage.TopicMetadata(
                 name='/tf',
@@ -634,6 +645,16 @@ class Nuscenes_Node(Node):
                 last_map_stamp = stamp
 
             # TODO: write CAN messages to /pose, /odom, and /diagnostics
+            can_msg_events = []
+            # for i in range(len(can_parsers)):
+            #     (can_msgs, index, msg_func) = can_parsers[i]
+            #     while index < len(can_msgs) and get_utime(can_msgs[index]) < stamp:
+            #         can_msg_events.append(msg_func(can_msgs[index]))
+            #         index += 1
+            #         can_parsers[i][1] = index
+            # can_msg_events.sort(key = lambda x: x[0])
+            # for (msg_stamp, topic, msg) in can_msg_events:
+            #     bag.write(topic, msg, stamp)
 
             # publish /tf
             tf_array = self.get_tfmessage(cur_sample)
