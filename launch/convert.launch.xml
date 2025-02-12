@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <launch>
-  <arg name="nuscenes_dir" default="/mnt/f/Data/nuscenes/Full_dataset_v1.0/v1.0-mini"/>
+  <arg name="nuscenes_dir" default="data"/>
   <arg name="nuscenes_version"  default="v1.0-mini"/>
   <arg name="scene_index" default="0"/>
-  <arg name="convert_RGBImage" default="false"/>
+  <arg name="convert_RGBImage" default="false" description="Flag whether convert RAW RGB image"/>
 
   <node name="nuscenes_convertor" pkg="nuscenes_player" exec="convertor" output="screen" >
     <param name="nuscenes_dir" value="$(var nuscenes_dir)"/>

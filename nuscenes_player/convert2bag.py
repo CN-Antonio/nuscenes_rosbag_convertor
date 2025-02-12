@@ -6,7 +6,7 @@ def main(args=None):
     rclpy.init(args=args)
     node = Nuscenes_Node("nuscenes_Node")
     id = node.get_parameter("scene_index").value
-    print(id)
+    print('selected scene: ', id)
     node.convert_scene(id)
     rclpy.shutdown() 
 

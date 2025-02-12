@@ -299,6 +299,7 @@ class Nuscenes_Node(Node):
 
         return tf_array
 
+    # TODO: modify pc_filename 'data' by declare_param 
     def get_radar(self, sample_data, frame_id):
         pc_filename = 'data/' + sample_data['filename']
         # pc = pypcd.PointCloud.from_path(pc_filename)
@@ -480,30 +481,29 @@ class Nuscenes_Node(Node):
             stamp.nanoseconds
         )
 
-    def get_imu_msg(imu_data):
-    #     msg = Imu()
-    #     msg.header.frame_id = 'base_link'
-    #     msg.header.stamp = get_utime(imu_data)
-    #     msg.angular_velocity.x = imu_data['rotation_rate'][0];
-    #     msg.angular_velocity.y = imu_data['rotation_rate'][1];
-    #     msg.angular_velocity.z = imu_data['rotation_rate'][2];
+    def get_imu_msg(self, imu_data):
+        msg = Imu()
+        msg.header.frame_id = 'base_link'
+        msg.header.stamp = self.unix_us2time(imu_data['utime']).to_msg()# get_utime(imu_data)
+        msg.angular_velocity.x = imu_data['rotation_rate'][0]
+        msg.angular_velocity.y = imu_data['rotation_rate'][1]
+        msg.angular_velocity.z = imu_data['rotation_rate'][2]
 
-    #     msg.linear_acceleration.x = imu_data['linear_accel'][0];
-    #     msg.linear_acceleration.y = imu_data['linear_accel'][1];
-    #     msg.linear_acceleration.z = imu_data['linear_accel'][2];
+        msg.linear_acceleration.x = imu_data['linear_accel'][0]
+        msg.linear_acceleration.y = imu_data['linear_accel'][1]
+        msg.linear_acceleration.z = imu_data['linear_accel'][2]
 
-    #     msg.orientation.w = imu_data['q'][0];
-    #     msg.orientation.x = imu_data['q'][1];
-    #     msg.orientation.y = imu_data['q'][2];
-    #     msg.orientation.z = imu_data['q'][3];
+        msg.orientation.w = imu_data['q'][0]
+        msg.orientation.x = imu_data['q'][1]
+        msg.orientation.y = imu_data['q'][2]
+        msg.orientation.z = imu_data['q'][3]
         
-    #     return (msg.header.stamp, '/imu', msg)
-        pass
+        return (msg.header.stamp, '/imu', msg)
 
-    def get_odom_msg(pose_data):
+    def get_odom_msg(self, pose_data):
         msg = Odometry()
         msg.header.frame_id = 'map'
-        msg.header.stamp = get_utime(pose_data)
+        msg.header.stamp = self.unix_us2time(pose_data['utime']).to_msg()# get_utime(pose_data)
         msg.child_frame_id = 'base_link'
         msg.pose.pose.position.x = pose_data['pos'][0]
         msg.pose.pose.position.y = pose_data['pos'][1]
@@ -535,14 +535,15 @@ class Nuscenes_Node(Node):
 
         cur_sample = self.nusc.get('sample', scene['first_sample_token'])
 
-        # can_parsers = [
-        #     [nusc_can.get_messages(scene_name, 'ms_imu'), 0, get_imu_msg],
-        #     [nusc_can.get_messages(scene_name, 'pose'), 0, get_odom_msg],
-        #     [nusc_can.get_messages(scene_name, 'steeranglefeedback'), 0, lambda x: get_basic_can_msg('Steering Angle', x)],
-        #     [nusc_can.get_messages(scene_name, 'vehicle_monitor'), 0, lambda x: get_basic_can_msg('Vehicle Monitor', x)],
-        #     [nusc_can.get_messages(scene_name, 'zoesensors'), 0, lambda x: get_basic_can_msg('Zoe Sensors', x)],
-        #     [nusc_can.get_messages(scene_name, 'zoe_veh_info'), 0, lambda x: get_basic_can_msg('Zoe Vehicle Info', x)],
-        # ]
+        # TODO: for topic /diagnostics
+        can_parsers = [
+            [self.nusc_can.get_messages(scene_name, 'ms_imu'), 0, self.get_imu_msg],
+            [self.nusc_can.get_messages(scene_name, 'pose'), 0, self.get_odom_msg],
+            # [self.nusc_can.get_messages(scene_name, 'steeranglefeedback'), 0, lambda x: get_basic_can_msg('Steering Angle', x)],
+            # [self.nusc_can.get_messages(scene_name, 'vehicle_monitor'), 0, lambda x: get_basic_can_msg('Vehicle Monitor', x)],
+            # [self.nusc_can.get_messages(scene_name, 'zoesensors'), 0, lambda x: get_basic_can_msg('Zoe Sensors', x)],
+            # [self.nusc_can.get_messages(scene_name, 'zoe_veh_info'), 0, lambda x: get_basic_can_msg('Zoe Vehicle Info', x)],
+        ]
 
         # rosbag metadata
         bag_name = f'nuScenes-{self.nuscenes_version}-{scene_name}.bag'
@@ -570,13 +571,25 @@ class Nuscenes_Node(Node):
                 type='visualization_msgs/msg/MarkerArray',
                 serialization_format='cdr')
         self.writer.create_topic(topic_info)
-        # /pose
+        # /imu
+        topic_info = rosbag2_py._storage.TopicMetadata(
+                name='/imu',
+                type='sensor_msgs/msg/Imu',
+                serialization_format='cdr')
+        self.writer.create_topic(topic_info)
+        # TODO: remove /pose
         topic_info = rosbag2_py._storage.TopicMetadata(
                 name='/pose',
                 type='geometry_msgs/msg/PoseStamped',
                 serialization_format='cdr')
         self.writer.create_topic(topic_info)
-        # TODO: /odom, and /diagnostics
+        # /odom
+        topic_info = rosbag2_py._storage.TopicMetadata(
+                name='/odom',
+                type='nav_msgs/msg/Odometry',
+                serialization_format='cdr')
+        self.writer.create_topic(topic_info)
+        # TODO: create /diagnostics
         # /tf
         topic_info = rosbag2_py._storage.TopicMetadata(
                 name='/tf',
@@ -653,6 +666,22 @@ class Nuscenes_Node(Node):
         )
         last_map_stamp = stamp
 
+        # write CAN messages to /imu, /odom, and /diagnostics
+        can_msg_events = [] # len = sum
+        for i in range(len(can_parsers)): # len(can_parsers) == 6
+            (can_msgs, index, msg_func) = can_parsers[i]
+            print(len(can_msgs))
+            for can_msg in can_msgs:
+                can_msg_events.append(msg_func(can_msg))
+        print('len of can_msg_events:', len(can_msg_events))
+        for (msg_stamp, topic, msg) in can_msg_events:
+            # bag.write(topic, msg, stamp)
+            self.writer.write(
+                topic,
+                serialize_message(msg),
+                rclpy.time.Time.from_msg(msg_stamp).nanoseconds
+            )
+
         # iterate sample
         while cur_sample is not None:
             sample_lidar = self.nusc.get('sample_data', cur_sample['data']['LIDAR_TOP'])
@@ -668,7 +697,7 @@ class Nuscenes_Node(Node):
                 self.writer.write(
                     '/map',
                     serialize_message(map_msg),
-                stamp.nanoseconds
+                    stamp.nanoseconds
                 )
                 self.writer.write(
                     '/semantic_map',
@@ -676,24 +705,6 @@ class Nuscenes_Node(Node):
                     stamp.nanoseconds
                 )
                 last_map_stamp = stamp
-
-            # TODO: write CAN messages to /pose, /odom, and /diagnostics
-            can_msg_events = []
-            for i in range(len(can_parsers)):
-                (can_msgs, index, msg_func) = can_parsers[i]
-                while index < len(can_msgs) and get_utime(can_msgs[index]) < stamp:
-                    can_msg_events.append(msg_func(can_msgs[index]))
-                    index += 1
-                    can_parsers[i][1] = index
-            can_msg_events.sort(key = lambda x: x[0])
-            for (msg_stamp, topic, msg) in can_msg_events:
-                # bag.write(topic, msg, stamp)
-                # self.writer.write(
-                #     topic,
-                #     serialize_message(msg),
-                #     msg_stamp.nanoseconds
-                # )
-                pass
 
             # publish /tf
             tf_array = self.get_tfmessage(cur_sample)
@@ -744,6 +755,7 @@ class Nuscenes_Node(Node):
                         stamp.nanoseconds
                     )
 
+            # TODO: remove unused topic
             # publish /pose
             pose_stamped = PoseStamped()
             pose_stamped.header.frame_id = 'base_link'

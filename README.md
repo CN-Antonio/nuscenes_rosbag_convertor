@@ -39,5 +39,5 @@ nuscenes
 
 run
 ```bash
-
+ros2 launch nuscenes_player convert.launch.xml scene_index:=0
 ```
