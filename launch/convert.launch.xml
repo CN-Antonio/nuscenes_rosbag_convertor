@@ -1,6 +1,7 @@
 <?xml version="1.0"?>
 <launch>
   <arg name="nuscenes_dir" default="data"/>
+  <arg name="output_dir" default="data"/>
   <arg name="nuscenes_version"  default="v1.0-mini"/>
   <arg name="scene_index" default="0"/>
   <arg name="convert_RGBImage" default="false" description="Flag whether convert RAW RGB image"/>

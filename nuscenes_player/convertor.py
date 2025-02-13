@@ -3,7 +3,7 @@ import math
 from typing import Tuple, Dict
 import numpy as np
 import cv2
-# from pypcd import numpy_pc2, pypcd
+from pypcd import numpy_pc2, pypcd
 from pyquaternion import Quaternion
 # ROS
 from rclpy.node import Node
@@ -299,18 +299,16 @@ class Nuscenes_Node(Node):
 
         return tf_array
 
-    # TODO: modify pc_filename 'data' by declare_param 
     def get_radar(self, sample_data, frame_id):
-        pc_filename = 'data/' + sample_data['filename']
-        # pc = pypcd.PointCloud.from_path(pc_filename)
-        # msg = numpy_pc2.array_to_pointcloud2(pc.pc_data)
-        # msg.header.frame_id = frame_id
-        # msg.header.stamp = self.unix_us2time(sample_data['timestamp']).to_msg()
-        # return msg
-        pass
+        pc_filename = os.path.join(self.nuscenes_dir, sample_data['filename'])
+        pc = pypcd.PointCloud.from_path(pc_filename)
+        msg = numpy_pc2.array_to_pointcloud2(pc.pc_data)
+        msg.header.frame_id = frame_id
+        msg.header.stamp = self.unix_us2time(sample_data['timestamp']).to_msg()
+        return msg
 
     def get_lidar(self, sample_data, frame_id):
-        pc_filename = 'data/' + sample_data['filename']
+        pc_filename = os.path.join(self.nuscenes_dir, sample_data['filename'])
         pc_filesize = os.stat(pc_filename).st_size
 
         with open(pc_filename, 'rb') as pc_file:
@@ -337,7 +335,7 @@ class Nuscenes_Node(Node):
             return msg
 
     def get_camera_compressed(self, sample_data, frame_id):
-        jpg_filename = 'data/' + sample_data['filename']
+        jpg_filename = os.path.join(self.nuscenes_dir, sample_data['filename'])
         msg = CompressedImage()
         msg.header.frame_id = frame_id
         msg.header.stamp = self.unix_us2time(sample_data['timestamp']).to_msg()
@@ -348,7 +346,7 @@ class Nuscenes_Node(Node):
 
     # RGB Image
     def get_camera(self, sample_data, frame_id):
-        jpg_filename = 'data/' + sample_data['filename']
+        jpg_filename = os.path.join(self.nuscenes_dir, sample_data['filename'])
         img = cv2.imread(jpg_filename)
 
         msg = Image()
@@ -602,14 +600,22 @@ class Nuscenes_Node(Node):
                 type='nav_msgs/msg/OccupancyGrid',
                 serialization_format='cdr')
         self.writer.create_topic(topic_info)
-        # TODO: RADAR
+        # radars
+        channels = ['RADAR_FRONT', 'RADAR_FRONT_LEFT', 'RADAR_FRONT_RIGHT',
+                    'RADAR_BACK_LEFT', 'RADAR_BACK_RIGHT']
+        for channel in channels:
+            topic_info = rosbag2_py._storage.TopicMetadata(
+                name='/' + channel,
+                type='sensor_msgs/msg/PointCloud2',
+                serialization_format='cdr')
+            self.writer.create_topic(topic_info)
         # /LIDAR_TOP
         topic_info = rosbag2_py._storage.TopicMetadata(
             name='/LIDAR_TOP',
             type='sensor_msgs/msg/PointCloud2',
             serialization_format='cdr')
         self.writer.create_topic(topic_info)
-        # camera
+        # cameras
         channels = ['CAM_BACK',  'CAM_FRONT', 'CAM_FRONT_LEFT',
                     'CAM_FRONT_RIGHT', 'CAM_BACK_RIGHT', 'CAM_BACK_LEFT']
         for channel in channels:
@@ -717,14 +723,19 @@ class Nuscenes_Node(Node):
             # /driveable_area occupancy grid
             self.write_occupancy_grid(nusc_map, ego_pose, stamp)
             
-            # TODO: iterate sensors
+            # iterate sensors
             for (sensor_id, sample_data_token) in cur_sample['data'].items():
                 sample_data = self.nusc.get('sample_data', sample_data_token)
                 topic = '/' + sensor_id
 
                 # write the sensor data
                 if sample_data['sensor_modality'] == 'radar':
-                    pass
+                    msg = self.get_radar(sample_data, sensor_id)
+                    self.writer.write(
+                        topic,
+                        serialize_message(msg),
+                        stamp.nanoseconds
+                    )
                 elif sample_data['sensor_modality'] == 'lidar':
                     msg = self.get_lidar(sample_data, sensor_id)
                     self.writer.write(
@@ -827,7 +838,7 @@ class Nuscenes_Node(Node):
 
                     if next_sample_data['sensor_modality'] == 'radar':
                         msg = self.get_radar(next_sample_data, sensor_id)
-                        # non_keyframe_sensor_msgs.append((msg.header.stamp.to_nsec(), topic, msg))
+                        non_keyframe_sensor_msgs.append((msg.header.stamp.sec*1_000_000_000+msg.header.stamp.nanosec, topic, msg))
                     elif next_sample_data['sensor_modality'] == 'lidar':
                         msg = self.get_lidar(next_sample_data, sensor_id)
                         non_keyframe_sensor_msgs.append((msg.header.stamp.sec*1_000_000_000+msg.header.stamp.nanosec, topic, msg))
